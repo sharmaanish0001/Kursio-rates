@@ -1,0 +1,45 @@
+name: Update rates
+
+on:
+  schedule:
+    - cron: '6 * * * *'      # every hour, 6 minutes past (the provider refreshes about 1-2 minutes past the hour)
+  workflow_dispatch:         # lets you press "Run workflow" by hand
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-rates
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OXR_APP_ID: ${{ secrets.OXR_APP_ID }}
+    steps:
+      - name: Waiting for the App ID secret
+        if: ${{ env.OXR_APP_ID == '' }}
+        run: echo "Secret OXR_APP_ID is not set yet, so nothing was fetched. Add it in Settings, Secrets and variables, Actions."
+      - uses: actions/checkout@v4
+        if: ${{ env.OXR_APP_ID != '' }}
+      - uses: actions/setup-node@v4
+        if: ${{ env.OXR_APP_ID != '' }}
+        with:
+          node-version: 20
+      - name: Fetch the latest rates
+        if: ${{ env.OXR_APP_ID != '' }}
+        run: node scripts/fetch.mjs
+      - name: Save the file if it changed
+        if: ${{ env.OXR_APP_ID != '' }}
+        run: |
+          if git diff --quiet -- latest.json; then
+            echo "No change"
+          else
+            git config user.name "kursio-rates bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add latest.json
+            git commit -m "Rates update"
+            git push
+          fi
