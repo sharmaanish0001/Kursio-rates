@@ -83,6 +83,14 @@ export async function build() {
     report[s.id] = names.length + ' read, ' + added + ' new';
     if (s.must && names.length < 90) throw new Error(s.id + ' looks wrong: only ' + names.length + ' names');
   }
+  // MCA company master data (prepared separately on a computer in India, because data.gov.in blocks other countries).
+  try {
+    if (existsSync('mca-companies.json')) {
+      const m = JSON.parse(readFileSync('mca-companies.json', 'utf8')); let added = 0;
+      for (const r of m.n || []) { const k = key(r[0]); if (!k || seen.has(k)) continue; seen.add(k); out.push([r[0], 'India', r[2], r[3]]); added++; }
+      report.mca = (m.n || []).length + ' read, ' + added + ' new';
+    } else report.mca = 'no file yet';
+  } catch (e) { report.mca = 'FAILED (' + e.message + ')'; }
   // BSE: best effort only; names not already known are treated as smaller listed companies.
   try {
     const r = await fetch('https://api.bseindia.com/BseIndiaAPI/api/ListofScripMaster/w?branchid=&groupid=&scripcode=&industry=&segment=Equity&status=Active',
