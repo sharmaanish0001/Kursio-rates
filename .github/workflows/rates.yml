@@ -34,7 +34,7 @@ jobs:
       - name: Save the file if it changed
         if: ${{ env.OXR_APP_ID != '' }}
         run: |
-          if git diff --quiet -- latest.json; then
+          if [ -z "$(git status --porcelain -- latest.json)" ]; then
             echo "No change"
           else
             git config user.name "kursio-rates bot"
