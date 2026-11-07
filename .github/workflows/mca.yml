@@ -17,7 +17,7 @@ concurrency:
 jobs:
   mca:
     runs-on: self-hosted
-    timeout-minutes: 420
+    timeout-minutes: 600
     env:
       DATAGOV_KEY: ${{ secrets.DATAGOV_KEY }}
       GITHUB_TOKEN: ${{ github.token }}

@@ -10,7 +10,9 @@ import { pretty } from './companies.mjs';
 const KEY = process.env.DATAGOV_KEY;
 const RES = '4dbe5667-7b6b-41d7-82af-211562424d9a';
 const DIR = process.env.MCA_CACHE || 'mca-cache';
-const PAR = 3, PAGE = 10;
+const PAR = 1, PAGE = 10;
+let gap = Number(process.env.MCA_GAP_MS || 800);   // pause between calls; grows when the service says 'slow down'
+let okRun = 0, waitedFor429 = 0;
 const CR = 1e7;
 const MID = 100 * CR, SMALL = 10 * CR;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -19,14 +21,24 @@ const clean = s => String(s).split(KEY || '\u0000').join('***');
 async function call(filters, offset, tries = 6) {
   const p = new URLSearchParams({ 'api-key': KEY, format: 'json', offset: String(offset), limit: String(PAGE) });
   for (const [k, v] of Object.entries(filters)) p.set('filters[' + k + ']', v);
-  let last;
-  for (let t = 0; t < tries; t++) {
+  let last, slow = 0;
+  for (let t = 0; t < tries; ) {
+    await sleep(gap);
     try {
       const r = await fetch('https://api.data.gov.in/resource/' + RES + '?' + p, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(60000) });
-      if (r.ok) { const j = await r.json(); if (Array.isArray(j.records)) return j; last = 'no records field'; }
-      else last = 'HTTP ' + r.status;
-    } catch (e) { last = e.message; }
-    await sleep(Math.min(60000, 1500 * 2 ** t));
+      if (r.ok) {
+        const j = await r.json();
+        if (Array.isArray(j.records)) { if (++okRun >= 300) { okRun = 0; gap = Math.max(400, Math.round(gap * 0.9)); } return j; }
+        last = 'no records field';
+      } else if (r.status === 429 || r.status === 503) {
+        okRun = 0; gap = Math.min(5000, Math.round(gap * 1.5)); slow++;
+        const ra = Number(r.headers.get('retry-after')); const wait = (ra > 0 ? ra : 60) * 1000;
+        waitedFor429 += wait; console.log('Told to slow down (HTTP ' + r.status + '), waiting ' + Math.round(wait / 1000) + 's, gap now ' + gap + 'ms');
+        if (slow > 40) throw new Error('Still rate limited after many waits');
+        await sleep(wait); continue;
+      } else last = 'HTTP ' + r.status;
+    } catch (e) { if (/Still rate/.test(e.message)) throw e; last = e.message; }
+    t++; await sleep(Math.min(60000, 1500 * 2 ** t));
   }
   throw new Error(clean('Gave up at offset ' + offset + ': ' + last));
 }
@@ -74,7 +86,7 @@ async function main() {
       }
       if (lines) appendFileSync(file, lines);
       st.offset += offs.length * PAGE; save();
-      if (Date.now() - lastLog > 120000) { lastLog = Date.now(); console.log(s.name, st.offset + ' / ' + st.total, 'in', Math.round((Date.now() - t0) / 60000), 'min'); }
+      if (Date.now() - lastLog > 300000) { lastLog = Date.now(); console.log(s.name, st.offset + ' / ' + st.total, 'in', Math.round((Date.now() - t0) / 60000), 'min, gap', gap, 'ms'); }
     }
     st.done = true; save(); console.log(s.name, 'finished');
   }
