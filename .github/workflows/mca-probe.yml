@@ -17,9 +17,15 @@ jobs:
       - name: Look for the company datasets
         shell: cmd
         run: |
-          echo == search 1: company master data
-          curl.exe -sS -g -m 60 -A "Mozilla/5.0" -G "https://api.data.gov.in/lists" --data-urlencode "format=json" --data-urlencode "notfilters[source]=visualize.data.gov.in" --data-urlencode "filters[title]=company master data" --data-urlencode "offset=0" --data-urlencode "limit=30" --data-urlencode "api-key=%DATAGOV_KEY%"
+          set RES=4dbe5667-7b6b-41d7-82af-211562424d9a
+          echo == sample 3 records
+          curl.exe -sS -g -m 90 -A "Mozilla/5.0" -G "https://api.data.gov.in/resource/%RES%" --data-urlencode "api-key=%DATAGOV_KEY%" --data-urlencode "format=json" --data-urlencode "offset=0" --data-urlencode "limit=3"
           echo.
-          echo == search 2: registered companies
-          curl.exe -sS -g -m 60 -A "Mozilla/5.0" -G "https://api.data.gov.in/lists" --data-urlencode "format=json" --data-urlencode "notfilters[source]=visualize.data.gov.in" --data-urlencode "filters[title]=registered companies" --data-urlencode "offset=0" --data-urlencode "limit=30" --data-urlencode "api-key=%DATAGOV_KEY%"
+          echo == active companies count
+          curl.exe -sS -g -m 90 -A "Mozilla/5.0" -G "https://api.data.gov.in/resource/%RES%" --data-urlencode "api-key=%DATAGOV_KEY%" --data-urlencode "format=json" --data-urlencode "offset=0" --data-urlencode "limit=1" --data-urlencode "filters[CompanyStatus]=Active"
           echo.
+          echo == name filter test
+          curl.exe -sS -g -m 90 -A "Mozilla/5.0" -G "https://api.data.gov.in/resource/%RES%" --data-urlencode "api-key=%DATAGOV_KEY%" --data-urlencode "format=json" --data-urlencode "offset=0" --data-urlencode "limit=3" --data-urlencode "filters[CompanyName]=XCEEDANCE CONSULTING PRIVATE LIMITED"
+          echo.
+          echo == big page timing 1000 records
+          curl.exe -sS -g -m 120 -A "Mozilla/5.0" -G "https://api.data.gov.in/resource/%RES%" --data-urlencode "api-key=%DATAGOV_KEY%" --data-urlencode "format=json" --data-urlencode "offset=0" --data-urlencode "limit=1000" -o NUL -w "http %{http_code} bytes %{size_download} seconds %{time_total}\n"
