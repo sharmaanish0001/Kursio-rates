@@ -1,0 +1,33 @@
+name: MCA probe (runs on the computer in India)
+
+# Manual only. Runs on the self-hosted runner so data.gov.in sees an Indian connection.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    env:
+      DATAGOV_KEY: ${{ secrets.DATAGOV_KEY }}
+    steps:
+      - name: Look for the company datasets
+        shell: powershell
+        run: |
+          $key = $env:DATAGOV_KEY
+          if (-not $key) { Write-Host "No key"; exit 1 }
+          foreach ($q in @('company master data', 'registered companies', 'MCA')) {
+            Write-Host ""
+            Write-Host "== search: $q"
+            $u = "https://api.data.gov.in/lists?format=json&notfilters[source]=visualize.data.gov.in&filters[title]=" + [uri]::EscapeDataString($q) + "&offset=0&limit=40&api-key=" + $key
+            try {
+              $r = Invoke-RestMethod -Uri $u -TimeoutSec 60 -UserAgent 'Mozilla/5.0'
+              Write-Host ("total: " + $r.total + ", returned: " + @($r.records).Count + ", fields: " + (($r | Get-Member -MemberType NoteProperty).Name -join ','))
+              foreach ($x in $r.records) { Write-Host ("- " + $x.title + " | " + $x.index_name + " | " + $x.org_type) }
+            } catch {
+              Write-Host ("ERROR: " + ($_.Exception.Message -replace [regex]::Escape($key), '***'))
+            }
+          }
