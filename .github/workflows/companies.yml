@@ -1,0 +1,36 @@
+name: Update company list
+
+on:
+  schedule:
+    - cron: '30 3 * * 1'     # every Monday, early morning
+  workflow_dispatch:         # lets you press "Run workflow" by hand
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-companies
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build the company list from the NSE and BSE lists
+        run: node scripts/companies.mjs
+      - name: Save the file if it changed
+        run: |
+          if [ -z "$(git status --porcelain -- companies.json)" ]; then
+            echo "No change"
+          else
+            git config user.name "kursio-rates bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add companies.json
+            git commit -m "Company list update"
+            git push
+          fi
