@@ -1,10 +1,10 @@
-name: Update MCA company sizes
+name: Update larger companies from MCA (runs on the computer in India)
 
-# Needs the computer in India to be on, because data.gov.in only answers Indian connections.
-# Runs on the first of each month, or by hand. If the computer is off, the run just fails and nothing changes.
+# MCA's data only answers Indian connections, so this runs on the self-hosted runner.
+# It starts by hand or once a week. If the computer is off, it waits until it is back.
 on:
   schedule:
-    - cron: '0 20 1 * *'
+    - cron: '0 1 * * 0'      # Sunday, early morning in India
   workflow_dispatch:
 
 permissions:
@@ -15,45 +15,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  fetch:
+  mca:
     runs-on: self-hosted
-    timeout-minutes: 240
+    timeout-minutes: 420
     env:
       DATAGOV_KEY: ${{ secrets.DATAGOV_KEY }}
+      GITHUB_TOKEN: ${{ github.token }}
+      MCA_CACHE: C:\runner\mca-cache
     steps:
       - uses: actions/checkout@v4
-      - name: Download the company data from MCA
+      - name: Download and size the companies
         shell: cmd
         run: node scripts/mca.mjs
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mca-companies
-          path: mca-companies.json
-          if-no-files-found: error
-
-  publish:
-    needs: fetch
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: mca-companies
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Rebuild the company list
-        run: node scripts/companies.mjs
-      - name: Save the files if they changed
-        run: |
-          if [ -z "$(git status --porcelain -- companies.json mca-companies.json)" ]; then
-            echo "No change"
-          else
-            git config user.name "kursio-rates bot"
-            git config user.email "actions@users.noreply.github.com"
-            git add companies.json mca-companies.json
-            git commit -m "Company list update with MCA sizes"
-            git pull --rebase -q origin main || true
-            git push
-          fi

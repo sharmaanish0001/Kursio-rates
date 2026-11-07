@@ -27,6 +27,7 @@ const KEEP_UPPER = new Set(['ABB', 'ACC', 'BSE', 'NSE', 'HDFC', 'ICICI', 'IDFC',
 export function pretty(name) {
   let n = String(name).replace(/\s+/g, ' ').trim();
   n = n.replace(/\s*\(?\b(limited|ltd\.?)\)?\s*$/i, '').replace(/\s*\bpvt\.?\s*$/i, '').trim();
+  n = n.replace(/\s+(private|pvt\.?)\s*$/i, '').trim();
   if (n === n.toUpperCase() || n === n.toLowerCase()) {
     n = n.toLowerCase().split(' ').map((w, i) => {
       if (KEEP_UPPER.has(w.toUpperCase())) return w.toUpperCase();
@@ -88,6 +89,14 @@ export async function build() {
     if (existsSync('mca-companies.json')) {
       const m = JSON.parse(readFileSync('mca-companies.json', 'utf8')); let added = 0;
       for (const r of m.n || []) { const k = key(r[0]); if (!k || seen.has(k)) continue; seen.add(k); out.push([r[0], 'India', r[2], r[3]]); added++; }
+      report.mca = (m.n || []).length + ' read, ' + added + ' new';
+    } else report.mca = 'no file yet';
+  } catch (e) { report.mca = 'FAILED (' + e.message + ')'; }
+  // Larger Indian companies from MCA, prepared separately on a computer in India (companies-mca.json). Optional.
+  try {
+    if (existsSync('companies-mca.json')) {
+      const m = JSON.parse(readFileSync('companies-mca.json', 'utf8')); let added = 0;
+      for (const [raw, c, bnd] of m.n || []) { const n = pretty(raw), k = key(n); if (!k || seen.has(k)) continue; seen.add(k); out.push([n, c || 'India', bnd]); added++; }
       report.mca = (m.n || []).length + ' read, ' + added + ' new';
     } else report.mca = 'no file yet';
   } catch (e) { report.mca = 'FAILED (' + e.message + ')'; }

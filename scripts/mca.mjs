@@ -1,74 +1,109 @@
-// Downloads Indian public companies from the Ministry of Corporate Affairs' open data (data.gov.in)
-// and writes mca-companies.json with a size band for each. data.gov.in only answers Indian connections,
-// so this runs on the self-hosted runner. The service returns 10 records per call.
-//   Listed companies: all kept (small, or mid if paid-up capital is at least Rs 100 crore)
-//   Unlisted public companies: kept only if paid-up capital is at least Rs 10 crore
-//   Paid-up capital is a rough size guide. It never makes a company "big".
-import { writeFileSync } from 'node:fs';
+// Downloads large Indian companies from MCA's company master data on data.gov.in (it only answers Indian connections,
+// so this runs on a computer in India) and writes companies-mca.json: names with a size band from paid-up capital.
+//   paid-up capital >= Rs 100 crore -> m (mid)      >= Rs 10 crore -> s (small)      lower -> not kept
+// MCA companies are never marked big: paid-up capital is only a rough measure of size.
+// The download can take about an hour. Progress is saved after every batch, so a sleep or restart resumes where it stopped.
+import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, renameSync } from 'node:fs';
+import { join } from 'node:path';
 import { pretty } from './companies.mjs';
 
-const key = process.env.DATAGOV_KEY;
+const KEY = process.env.DATAGOV_KEY;
 const RES = '4dbe5667-7b6b-41d7-82af-211562424d9a';
-const CRORE = 1e7, MID = 100 * CRORE, SMALL = 10 * CRORE;
-const SLICES = [
-  { name: 'listed', f: { CompanyStatus: 'Active', Listingstatus: 'Listed' }, all: true },
-  { name: 'unlisted public', f: { CompanyStatus: 'Active', CompanyClass: 'Public', Listingstatus: 'Unlisted' }, all: false }
-];
+const DIR = process.env.MCA_CACHE || 'mca-cache';
+const PAR = 3, PAGE = 10;
+const CR = 1e7;
+const MID = 100 * CR, SMALL = 10 * CR;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const clean = s => String(s).split(KEY || '\u0000').join('***');
 
-export async function page(f, offset, fetchFn = fetch) {
-  const p = new URLSearchParams({ 'api-key': key || 'x', format: 'json', offset: String(offset), limit: '10' });
-  for (const [k, v] of Object.entries(f)) p.set('filters[' + k + ']', v);
+async function call(filters, offset, tries = 6) {
+  const p = new URLSearchParams({ 'api-key': KEY, format: 'json', offset: String(offset), limit: String(PAGE) });
+  for (const [k, v] of Object.entries(filters)) p.set('filters[' + k + ']', v);
   let last;
-  for (let a = 0; a < 6; a++) {
+  for (let t = 0; t < tries; t++) {
     try {
-      const r = await fetchFn('https://api.data.gov.in/resource/' + RES + '?' + p, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(60000) });
-      if (r.status === 429 || r.status >= 500) throw new Error('HTTP ' + r.status);
-      const j = await r.json();
-      if (j.status && j.status !== 'ok') throw new Error('API says ' + j.status + ' ' + (j.message || ''));
-      return j;
-    } catch (e) { last = e; await new Promise(res => setTimeout(res, 1000 * 2 ** a)); }
+      const r = await fetch('https://api.data.gov.in/resource/' + RES + '?' + p, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(60000) });
+      if (r.ok) { const j = await r.json(); if (Array.isArray(j.records)) return j; last = 'no records field'; }
+      else last = 'HTTP ' + r.status;
+    } catch (e) { last = e.message; }
+    await sleep(Math.min(60000, 1500 * 2 ** t));
   }
-  throw new Error('Gave up at offset ' + offset + ': ' + String(last && last.message).replace(key || '\u0000', '***'));
-}
-export function band(paidUp, listed) {
-  if (!(paidUp > 0)) return listed ? 's' : '';
-  if (paidUp >= MID) return 'm';
-  if (paidUp >= SMALL || listed) return 's';
-  return '';
+  throw new Error(clean('Gave up at offset ' + offset + ': ' + last));
 }
 
-export async function run(fetchFn = fetch, conc = 3) {
-  const out = [], seen = new Set();
+const base = { CompanyStatus: 'Active' };
+const SLICES = [
+  { name: 'public', filters: { ...base, CompanyClass: 'Public' } }
+];
+// Extra slices are found by trying likely names; one that exists and is a manageable size is added.
+const CANDIDATES = ['Subsidiary of Foreign Company', 'Subsidiary of foreign company', 'Union Govt company', 'Union govt company', 'State Govt company', 'State govt company'];
+
+export function band(paid) { return paid >= MID ? 'm' : paid >= SMALL ? 's' : ''; }
+
+async function main() {
+  if (!KEY) throw new Error('DATAGOV_KEY is not set');
+  mkdirSync(DIR, { recursive: true });
+  for (const c of CANDIDATES) {
+    try {
+      const j = await call({ ...base, CompanySubCategory: c }, 0, 2);
+      console.log('slice candidate', JSON.stringify(c), 'total', j.total);
+      if (j.total > 0 && j.total <= 60000) SLICES.push({ name: 'sub-' + c.toLowerCase().replace(/[^a-z]+/g, '-'), filters: { ...base, CompanySubCategory: c } });
+    } catch (e) { console.log('slice candidate', c, 'failed:', e.message); }
+  }
+  const stFile = join(DIR, 'state.json');
+  const state = existsSync(stFile) ? JSON.parse(readFileSync(stFile, 'utf8')) : {};
+  const save = () => { writeFileSync(stFile + '.tmp', JSON.stringify(state)); renameSync(stFile + '.tmp', stFile); };
+  const seen = new Set();
   for (const s of SLICES) {
-    const first = await page(s.f, 0, fetchFn); const total = Number(first.total) || 0;
-    console.log(s.name + ': ' + total + ' companies, about ' + Math.ceil(total / 10) + ' calls');
-    let next = 0, done = 0; const offsets = []; for (let o = 0; o < total; o += 10) offsets.push(o);
-    const take = recs => { for (const r of recs || []) {
-      const cin = r.CIN || r.CompanyName; if (seen.has(cin)) continue; seen.add(cin);
-      const b = band(parseFloat(r.PaidupCapital), s.all); if (!b) continue;
-      const nm = pretty(r.CompanyName || ''); if (!nm) continue;
-      out.push([nm, 'India', b, Math.round(parseFloat(r.PaidupCapital) / CRORE)]);
-    } };
-    take(first.records);
-    async function worker() {
-      while (true) {
-        const i = next++; if (i >= offsets.length) return;
-        if (offsets[i] === 0) continue;
-        take((await page(s.f, offsets[i], fetchFn)).records);
-        if (++done % 500 === 0) console.log('  ' + s.name + ': ' + done + ' of ' + offsets.length + ' pages, kept ' + out.length);
+    if (seen.has(s.name)) continue; seen.add(s.name);
+    const st = state[s.name] || (state[s.name] = { offset: 0, total: null, done: false, started: Date.now() });
+    const file = join(DIR, s.name + '.ndjson');
+    if (st.done && Date.now() - st.started < 6 * 864e5) { console.log(s.name, 'already complete'); continue; }
+    if (st.done) { st.offset = 0; st.done = false; st.started = Date.now(); writeFileSync(file, ''); }
+    if (st.offset === 0) writeFileSync(file, '');
+    const first = await call(s.filters, st.offset);
+    st.total = first.total; console.log(s.name, 'total', st.total, 'resuming at', st.offset);
+    let t0 = Date.now(), lastLog = 0;
+    while (st.offset < st.total) {
+      const offs = []; for (let k = 0; k < PAR && st.offset + k * PAGE < st.total; k++) offs.push(st.offset + k * PAGE);
+      const pages = await Promise.all(offs.map(o => call(s.filters, o)));
+      let lines = '';
+      for (const pg of pages) for (const r of pg.records) {
+        const paid = parseFloat(r.PaidupCapital); const b = band(paid);
+        if (b && r.CompanyName) lines += JSON.stringify([r.CompanyName, Math.round(paid), r.Listingstatus || '', b]) + '\n';
       }
+      if (lines) appendFileSync(file, lines);
+      st.offset += offs.length * PAGE; save();
+      if (Date.now() - lastLog > 120000) { lastLog = Date.now(); console.log(s.name, st.offset + ' / ' + st.total, 'in', Math.round((Date.now() - t0) / 60000), 'min'); }
     }
-    await Promise.all(Array.from({ length: conc }, worker));
+    st.done = true; save(); console.log(s.name, 'finished');
   }
-  return out;
+  // Build the output from every finished slice, biggest paid-up capital first.
+  const rows = new Map();
+  for (const s of SLICES) {
+    const file = join(DIR, s.name + '.ndjson'); if (!existsSync(file)) continue;
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      if (!line) continue; const [n, paid, , b] = JSON.parse(line); const name = pretty(n);
+      const k = name.toLowerCase(); if (!rows.has(k) || rows.get(k)[1] < paid) rows.set(k, [name, paid, b]);
+    }
+  }
+  const out = [...rows.values()].sort((a, b) => b[1] - a[1]).slice(0, 25000).map(r => [r[0], 'India', r[2]]);
+  console.log('companies kept:', out.length, 'mid:', out.filter(r => r[2] === 'm').length, 'small:', out.filter(r => r[2] === 's').length);
+  if (out.length < 500) throw new Error('Too few companies (' + out.length + '), not publishing');
+  const body = JSON.stringify({ t: Date.now(), source: 'MCA company master data (data.gov.in)', n: out });
+  writeFileSync(join(DIR, 'companies-mca.json'), body);
+  await publish(body);
 }
 
-if (process.argv[1] && process.argv[1].endsWith('mca.mjs')) {
-  if (!key) { console.error('No DATAGOV_KEY'); process.exit(1); }
-  try {
-    const out = await run();
-    console.log('Kept ' + out.length + ' companies');
-    if (out.length < 3000) throw new Error('Too few companies, not saving');
-    writeFileSync('mca-companies.json', JSON.stringify({ t: Date.now(), source: 'MCA company master data via data.gov.in', n: out }));
-  } catch (e) { console.error('Failed: ' + e.message); process.exit(1); }
+async function publish(body) {
+  const tok = process.env.GITHUB_TOKEN, repo = process.env.GITHUB_REPOSITORY || 'sharmaanish0001/Kursio-rates';
+  if (!tok) { console.log('No GITHUB_TOKEN, file kept locally only'); return; }
+  const h = { Authorization: 'Bearer ' + tok, Accept: 'application/vnd.github+json', 'User-Agent': 'kursio-mca' };
+  const url = 'https://api.github.com/repos/' + repo + '/contents/companies-mca.json';
+  let sha; const g = await fetch(url, { headers: h }); if (g.ok) sha = (await g.json()).sha;
+  const r = await fetch(url, { method: 'PUT', headers: h, body: JSON.stringify({ message: 'MCA company list update', content: Buffer.from(body).toString('base64'), sha }) });
+  if (!r.ok) throw new Error('Could not publish: HTTP ' + r.status + ' ' + clean((await r.text()).slice(0, 200)));
+  console.log('Published companies-mca.json');
 }
+
+if (process.argv[1] && process.argv[1].endsWith('mca.mjs')) main().catch(e => { console.error('Not updated: ' + clean(e.message)); process.exit(1); });
