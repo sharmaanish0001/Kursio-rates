@@ -14,21 +14,7 @@ jobs:
     env:
       DATAGOV_KEY: ${{ secrets.DATAGOV_KEY }}
     steps:
-      - name: Tool versions
+      - uses: actions/checkout@v4
+      - name: Count the slices
         shell: cmd
-        run: |
-          where node
-          node -v
-          curl.exe --version | findstr /B curl
-      - name: Deep paging and speed
-        shell: cmd
-        run: |
-          set RES=4dbe5667-7b6b-41d7-82af-211562424d9a
-          for %%O in (9000 10500 100000 1000000 2600000) do (
-            echo == offset %%O limit 1
-            curl.exe -sS -g -m 90 -A "Mozilla/5.0" -G "https://api.data.gov.in/resource/%RES%" --data-urlencode "api-key=%DATAGOV_KEY%" --data-urlencode "format=json" --data-urlencode "offset=%%O" --data-urlencode "limit=1" --data-urlencode "filters[CompanyStatus]=Active" -o NUL -w "http %%{http_code} bytes %%{size_download} secs %%{time_total}\n"
-          )
-          for %%L in (100 500 1000 5000) do (
-            echo == limit %%L
-            curl.exe -sS -g -m 120 -A "Mozilla/5.0" -G "https://api.data.gov.in/resource/%RES%" --data-urlencode "api-key=%DATAGOV_KEY%" --data-urlencode "format=json" --data-urlencode "offset=0" --data-urlencode "limit=%%L" --data-urlencode "filters[CompanyStatus]=Active" -o NUL -w "http %%{http_code} bytes %%{size_download} secs %%{time_total}\n"
-          )
+        run: node scripts/mca-probe.mjs
