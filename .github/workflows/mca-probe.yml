@@ -15,19 +15,11 @@ jobs:
       DATAGOV_KEY: ${{ secrets.DATAGOV_KEY }}
     steps:
       - name: Look for the company datasets
-        shell: powershell
+        shell: cmd
         run: |
-          $key = $env:DATAGOV_KEY
-          if (-not $key) { Write-Host "No key"; exit 1 }
-          foreach ($q in @('company master data', 'registered companies', 'MCA')) {
-            Write-Host ""
-            Write-Host "== search: $q"
-            $u = "https://api.data.gov.in/lists?format=json&notfilters[source]=visualize.data.gov.in&filters[title]=" + [uri]::EscapeDataString($q) + "&offset=0&limit=40&api-key=" + $key
-            try {
-              $r = Invoke-RestMethod -Uri $u -TimeoutSec 60 -UserAgent 'Mozilla/5.0'
-              Write-Host ("total: " + $r.total + ", returned: " + @($r.records).Count + ", fields: " + (($r | Get-Member -MemberType NoteProperty).Name -join ','))
-              foreach ($x in $r.records) { Write-Host ("- " + $x.title + " | " + $x.index_name + " | " + $x.org_type) }
-            } catch {
-              Write-Host ("ERROR: " + ($_.Exception.Message -replace [regex]::Escape($key), '***'))
-            }
-          }
+          echo == search 1: company master data
+          curl.exe -sS -g -m 60 -A "Mozilla/5.0" -G "https://api.data.gov.in/lists" --data-urlencode "format=json" --data-urlencode "notfilters[source]=visualize.data.gov.in" --data-urlencode "filters[title]=company master data" --data-urlencode "offset=0" --data-urlencode "limit=30" --data-urlencode "api-key=%DATAGOV_KEY%"
+          echo.
+          echo == search 2: registered companies
+          curl.exe -sS -g -m 60 -A "Mozilla/5.0" -G "https://api.data.gov.in/lists" --data-urlencode "format=json" --data-urlencode "notfilters[source]=visualize.data.gov.in" --data-urlencode "filters[title]=registered companies" --data-urlencode "offset=0" --data-urlencode "limit=30" --data-urlencode "api-key=%DATAGOV_KEY%"
+          echo.
