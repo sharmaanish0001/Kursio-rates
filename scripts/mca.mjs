@@ -45,7 +45,8 @@ async function call(filters, offset, tries = 6) {
 
 const base = { CompanyStatus: 'Active' };
 const SLICES = [
-  { name: 'public', filters: { ...base, CompanyClass: 'Public' } }
+  { name: 'listed', filters: { ...base, Listingstatus: 'Listed' } },   // about 7,400 companies: done first
+  { name: 'public', filters: { ...base, CompanyClass: 'Public' } }   // about 74,500 companies: slow, resumes next time
 ];
 // Extra slices are found by trying likely names; one that exists and is a manageable size is added.
 const CANDIDATES = ['Subsidiary of Foreign Company', 'Subsidiary of foreign company', 'Union Govt company', 'Union govt company', 'State Govt company', 'State govt company'];
@@ -65,6 +66,8 @@ async function main() {
   const stFile = join(DIR, 'state.json');
   const state = existsSync(stFile) ? JSON.parse(readFileSync(stFile, 'utf8')) : {};
   const save = () => { writeFileSync(stFile + '.tmp', JSON.stringify(state)); renameSync(stFile + '.tmp', stFile); };
+  await buildAndPublish(false).catch(e => console.log('first publish failed:', clean(e.message)));
+  let lastPub = Date.now();
   const seen = new Set();
   for (const s of SLICES) {
     if (seen.has(s.name)) continue; seen.add(s.name);
@@ -86,23 +89,30 @@ async function main() {
       }
       if (lines) appendFileSync(file, lines);
       st.offset += offs.length * PAGE; save();
+      if (Date.now() - lastPub > 25 * 60000) { lastPub = Date.now(); await buildAndPublish(false).catch(e => console.log('publish failed:', clean(e.message))); }
       if (Date.now() - lastLog > 300000) { lastLog = Date.now(); console.log(s.name, st.offset + ' / ' + st.total, 'in', Math.round((Date.now() - t0) / 60000), 'min, gap', gap, 'ms'); }
     }
     st.done = true; save(); console.log(s.name, 'finished');
   }
-  // Build the output from every finished slice, biggest paid-up capital first.
+  await buildAndPublish(true);
+}
+
+// Builds companies-mca.json from everything downloaded so far (finished or not) and publishes it.
+// Rows are [name, country, band, paid-up capital in Rs crore], biggest first.
+async function buildAndPublish(final) {
   const rows = new Map();
   for (const s of SLICES) {
     const file = join(DIR, s.name + '.ndjson'); if (!existsSync(file)) continue;
     for (const line of readFileSync(file, 'utf8').split('\n')) {
-      if (!line) continue; const [n, paid, , b] = JSON.parse(line); const name = pretty(n);
+      if (!line) continue; let rec; try { rec = JSON.parse(line); } catch { continue; }
+      const [n, paid, , b] = rec; const name = pretty(n);
       const k = name.toLowerCase(); if (!rows.has(k) || rows.get(k)[1] < paid) rows.set(k, [name, paid, b]);
     }
   }
-  const out = [...rows.values()].sort((a, b) => b[1] - a[1]).slice(0, 25000).map(r => [r[0], 'India', r[2]]);
-  console.log('companies kept:', out.length, 'mid:', out.filter(r => r[2] === 'm').length, 'small:', out.filter(r => r[2] === 's').length);
-  if (out.length < 500) throw new Error('Too few companies (' + out.length + '), not publishing');
-  const body = JSON.stringify({ t: Date.now(), source: 'MCA company master data (data.gov.in)', n: out });
+  const out = [...rows.values()].sort((a, b) => b[1] - a[1]).slice(0, 25000).map(r => [r[0], 'India', r[2], Math.round(r[1] / CR * 10) / 10]);
+  console.log((final ? 'companies kept: ' : 'so far: ') + out.length, 'mid:', out.filter(r => r[2] === 'm').length, 'small:', out.filter(r => r[2] === 's').length);
+  if (out.length < 500) { console.log('Too few companies yet (' + out.length + '), not publishing'); if (final) throw new Error('Too few companies'); return; }
+  const body = JSON.stringify({ t: Date.now(), partial: !final, source: 'MCA company master data (data.gov.in)', n: out });
   writeFileSync(join(DIR, 'companies-mca.json'), body);
   await publish(body);
 }
@@ -116,6 +126,10 @@ async function publish(body) {
   const r = await fetch(url, { method: 'PUT', headers: h, body: JSON.stringify({ message: 'MCA company list update', content: Buffer.from(body).toString('base64'), sha }) });
   if (!r.ok) throw new Error('Could not publish: HTTP ' + r.status + ' ' + clean((await r.text()).slice(0, 200)));
   console.log('Published companies-mca.json');
+  try {
+    const d = await fetch('https://api.github.com/repos/' + repo + '/actions/workflows/companies.yml/dispatches', { method: 'POST', headers: h, body: JSON.stringify({ ref: 'main' }) });
+    console.log('Asked the company-list job to refresh: HTTP ' + d.status);
+  } catch (e) { console.log('Could not start the company-list job:', e.message); }
 }
 
 if (process.argv[1] && process.argv[1].endsWith('mca.mjs')) main().catch(e => { console.error('Not updated: ' + clean(e.message)); process.exit(1); });
